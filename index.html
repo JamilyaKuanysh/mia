@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Mia">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="manifest" href="manifest.json">
+<title>Mia</title>
+<style>
+  :root {
+    --bg: #f6f3ef;
+    --card: #ffffff;
+    --text: #1f1b17;
+    --muted: #7a7068;
+    --line: #e7e0d8;
+    --accent: #e8664d;
+    --accent-soft: #fde8e3;
+    --mia: #ffffff;
+    --me: #2f6f6a;
+    --me-text: #ffffff;
+    --good: #2f8a57;
+    --good-soft: #e6f4ec;
+    --fix: #b8611c;
+    --fix-soft: #fdf1e5;
+    --shadow: 0 1px 3px rgba(40, 30, 20, .08);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #171513;
+      --card: #221f1c;
+      --text: #f2ece6;
+      --muted: #a59a90;
+      --line: #36312c;
+      --accent: #f07a62;
+      --accent-soft: #3a2420;
+      --mia: #2a2622;
+      --me: #3a8a83;
+      --good: #5cc28a;
+      --good-soft: #1d2c23;
+      --fix: #f0a35c;
+      --fix-soft: #33261a;
+      --shadow: none;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #171513; --card: #221f1c; --text: #f2ece6; --muted: #a59a90; --line: #36312c;
+    --accent: #f07a62; --accent-soft: #3a2420; --mia: #2a2622; --me: #3a8a83;
+    --good: #5cc28a; --good-soft: #1d2c23; --fix: #f0a35c; --fix-soft: #33261a; --shadow: none;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+    height: 100dvh;
+    -webkit-tap-highlight-color: transparent;
+  }
+  button { font: inherit; color: inherit; }
+
+  /* ---------- шапка с аватаром ---------- */
+  header {
+    padding: calc(env(safe-area-inset-top) + 10px) 16px 8px;
+    display: flex; align-items: center; gap: 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .avatar-wrap { position: relative; width: 84px; height: 84px; flex: none; }
+  .ring {
+    position: absolute; inset: -5px; border-radius: 50%;
+    border: 3px solid transparent; transition: border-color .2s, transform .08s;
+  }
+  body.listening .ring { border-color: var(--accent); }
+  body.speaking .ring { border-color: var(--good); }
+  #avatar { width: 100%; height: 100%; display: block; }
+  #eyes { transform-origin: 60px 58px; transition: transform .08s; }
+  #eyes.blink { transform: scaleY(.1); }
+  .who { flex: 1; min-width: 0; }
+  .who b { font-size: 20px; display: block; }
+  .status { color: var(--muted); font-size: 14px; min-height: 20px; }
+  .icon-btn {
+    width: 40px; height: 40px; border-radius: 50%; border: 0;
+    background: var(--card); box-shadow: var(--shadow); font-size: 18px;
+  }
+
+  /* ---------- чат ---------- */
+  #chat {
+    flex: 1; overflow-y: auto; padding: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .msg { max-width: 86%; padding: 10px 14px; border-radius: 18px; box-shadow: var(--shadow); }
+  .msg.mia { background: var(--mia); align-self: flex-start; border-bottom-left-radius: 6px; }
+  .msg.me { background: var(--me); color: var(--me-text); align-self: flex-end; border-bottom-right-radius: 6px; }
+  .msg .tools { display: flex; gap: 14px; margin-top: 6px; }
+  .msg .tools button { background: none; border: 0; padding: 0; color: var(--muted); font-size: 14px; }
+  .ru { color: var(--muted); font-size: 15px; margin-top: 6px; }
+  .phrase { margin-top: 6px; font-size: 14px; }
+  .phrase b { color: var(--accent); }
+  .fix {
+    align-self: flex-end; max-width: 86%;
+    background: var(--fix-soft); border-radius: 14px; padding: 10px 12px; font-size: 15px;
+  }
+  .fix .kind { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--fix); font-weight: 600; }
+  .fix .was { text-decoration: line-through; color: var(--muted); }
+  .fix .better { font-weight: 600; }
+  .fix .why { margin-top: 4px; color: var(--text); opacity: .85; }
+  .ok { align-self: flex-end; font-size: 13px; color: var(--good); padding: 0 6px; }
+  .hint { color: var(--muted); text-align: center; margin: auto; max-width: 300px; }
+
+  /* ---------- низ ---------- */
+  footer {
+    padding: 10px 16px calc(env(safe-area-inset-bottom) + 12px);
+    border-top: 1px solid var(--line);
+    display: flex; align-items: center; gap: 12px;
+  }
+  #mic {
+    width: 72px; height: 72px; border-radius: 50%; border: 0; flex: none;
+    background: var(--accent); color: #fff; font-size: 28px;
+    box-shadow: 0 4px 14px rgba(232, 102, 77, .35);
+    margin: 0 auto;
+  }
+  body.listening #mic { animation: pulse 1.2s infinite; }
+  body.thinking #mic { opacity: .5; }
+  @keyframes pulse { 50% { transform: scale(1.07); } }
+  .side { width: 48px; flex: none; }
+  #typeForm { display: none; flex: 1; gap: 8px; }
+  body.typing #typeForm { display: flex; }
+  body.typing #mic { display: none; }
+  #typeInput {
+    flex: 1; min-width: 0; padding: 12px 14px; border-radius: 22px;
+    border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit;
+  }
+  #typeForm button { border: 0; border-radius: 22px; padding: 0 16px; background: var(--accent); color: #fff; }
+
+  /* ---------- настройки ---------- */
+  dialog {
+    border: 0; border-radius: 18px; padding: 20px; width: min(420px, calc(100vw - 32px));
+    background: var(--card); color: var(--text);
+  }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog h2 { margin: 0 0 12px; font-size: 20px; }
+  dialog label { display: block; font-size: 14px; color: var(--muted); margin: 14px 0 6px; }
+  dialog input[type=password], dialog input[type=text], dialog select {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); font: inherit;
+  }
+  dialog input[type=range] { width: 100%; }
+  dialog .small { font-size: 13px; color: var(--muted); margin-top: 6px; }
+  dialog a { color: var(--accent); }
+  .row { display: flex; gap: 10px; margin-top: 20px; }
+  .row button { flex: 1; padding: 12px; border-radius: 12px; border: 0; background: var(--bg); }
+  .row .primary { background: var(--accent); color: #fff; }
+  #toast {
+    position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 100px); transform: translateX(-50%);
+    background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px;
+    max-width: calc(100vw - 32px); opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  #toast.show { opacity: .95; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="avatar-wrap">
+    <div class="ring" id="ring"></div>
+    <svg id="avatar" viewBox="0 0 120 120" aria-label="Mia">
+      <circle cx="60" cy="60" r="60" fill="#f6c9b3"/>
+      <path d="M18 70 C14 30 40 14 62 15 C88 16 106 34 102 72 C100 92 96 104 92 110 L28 110 C22 100 19 86 18 70Z" fill="#5a3a2a"/>
+      <ellipse cx="60" cy="64" rx="31" ry="36" fill="#f2c2a2"/>
+      <path d="M29 56 C30 34 48 24 64 26 C80 28 92 40 91 56 C80 46 66 40 50 42 C40 44 33 50 29 56Z" fill="#5a3a2a"/>
+      <path d="M38 50 Q46 46 53 49" stroke="#4a2f22" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+      <path d="M67 49 Q74 46 82 50" stroke="#4a2f22" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+      <g id="eyes">
+        <ellipse cx="46" cy="58" rx="4" ry="5" fill="#2b1d16"/>
+        <ellipse cx="74" cy="58" rx="4" ry="5" fill="#2b1d16"/>
+        <circle cx="47.3" cy="56.3" r="1.3" fill="#fff"/>
+        <circle cx="75.3" cy="56.3" r="1.3" fill="#fff"/>
+      </g>
+      <ellipse cx="38" cy="72" rx="6" ry="3.5" fill="#ec9f8a" opacity=".55"/>
+      <ellipse cx="82" cy="72" rx="6" ry="3.5" fill="#ec9f8a" opacity=".55"/>
+      <path d="M58 64 Q60 70 62 68" stroke="#d99a7c" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <path id="smile" d="M50 79 Q60 87 70 79" stroke="#b8475a" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <ellipse id="mouth" cx="60" cy="81" rx="8" ry="2" fill="#8c2f3f" opacity="0"/>
+    </svg>
+  </div>
+  <div class="who">
+    <b>Mia</b>
+    <div class="status" id="status">Los Angeles</div>
+  </div>
+  <button class="icon-btn" id="settingsBtn" aria-label="Настройки">⚙︎</button>
+</header>
+
+<main id="chat"></main>
+
+<footer>
+  <button class="icon-btn side" id="kbBtn" aria-label="Написать текстом">Aa</button>
+  <button id="mic" aria-label="Говорить">🎙</button>
+  <form id="typeForm">
+    <input id="typeInput" type="text" autocomplete="off" autocapitalize="sentences" placeholder="Type in English…">
+    <button type="submit">↑</button>
+  </form>
+  <div class="side"></div>
+</footer>
+
+<dialog id="settings">
+  <h2>Настройки</h2>
+  <label for="keyInput">Ключ Gemini API</label>
+  <input id="keyInput" type="password" autocomplete="off" placeholder="AIza…">
+  <div class="small">Бесплатно: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key. Ключ хранится только на этом телефоне.</div>
+
+  <label for="voiceSelect">Голос Mia</label>
+  <select id="voiceSelect"></select>
+  <div class="small">Самый живой голос: Настройки iPhone → Универсальный доступ → Устный контент → Голоса → English → скачайте «Ava (Premium)».</div>
+
+  <label for="rateInput">Скорость речи</label>
+  <input id="rateInput" type="range" min="0.7" max="1.15" step="0.05">
+
+  <div class="row">
+    <button id="resetBtn" type="button">Новый разговор</button>
+    <button id="saveBtn" type="button" class="primary">Готово</button>
+  </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+const SYSTEM = `You are Mia, a friendly 28-year-old from Los Angeles. You're chatting by voice with Jamilya, a Russian-speaking woman from Almaty, Kazakhstan. She wants to speak the way real Americans talk in everyday life, not textbook English.
+
+How you talk:
+- Casual, warm, real American English: contractions (I'm, gonna, wanna, kinda), everyday phrases and common slang that 20-30-something Americans actually use (e.g. "no worries", "I'm down", "that's a bummer", "for real"). Nothing outdated, nothing vulgar.
+- Keep replies short: 1-3 sentences, like a real chat. Usually end with a question or something that keeps the conversation going.
+- Match her level: if she struggles, use simpler words; if she's doing well, use richer expressions.
+- Talk about everyday life: work, food, weekends, travel, shopping, movies, feelings, making plans. Be curious about her life in Almaty. Share bits of your own (invented) LA life.
+- If she speaks Russian or asks "как сказать ...", tell her how an American would say it, then continue the chat.
+
+Corrections ("fixes"):
+- Check what she said. Add a fix when there's a grammar mistake; a wrong or unnatural word; a phrase that is correct but sounds like a textbook where an American would say it differently ("I am fine, thank you" -> "I'm good, thanks!"); or (from the audio) a word mispronounced badly enough to confuse an American.
+- At most 2 fixes per turn, the most useful ones. Don't nitpick. If it sounded natural, return an empty array.
+- original: the exact fragment she said. better: how an American would naturally say it. why_ru: 1-2 short sentences in simple Russian explaining why, addressing her as «Вы».
+- kind: grammar, word, textbook or pronunciation.
+- Don't mention corrections in "reply" - reply naturally like a friend; the app shows fixes separately.
+
+Other fields:
+- heard: exactly what she said (transcribe her audio word for word, keep her mistakes). If you can't make it out, set heard to "" and in reply casually ask her to say it again.
+- reply_ru: natural Russian translation of your reply.
+- phrases: 0-2 slang words or idioms from YOUR reply that she might not know, with a short Russian meaning. Empty array if none.`;
+
+const SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    heard: { type: "STRING" },
+    fixes: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: {
+          original: { type: "STRING" },
+          better: { type: "STRING" },
+          why_ru: { type: "STRING" },
+          kind: { type: "STRING", enum: ["grammar", "word", "textbook", "pronunciation"] }
+        },
+        required: ["original", "better", "why_ru", "kind"]
+      }
+    },
+    reply: { type: "STRING" },
+    reply_ru: { type: "STRING" },
+    phrases: {
+      type: "ARRAY",
+      items: {
+        type: "OBJECT",
+        properties: { phrase: { type: "STRING" }, meaning_ru: { type: "STRING" } },
+        required: ["phrase", "meaning_ru"]
+      }
+    }
+  },
+  required: ["heard", "fixes", "reply", "reply_ru", "phrases"],
+  propertyOrdering: ["heard", "fixes", "reply", "reply_ru", "phrases"]
+};
+
+const MODELS = ["gemini-flash-latest", "gemini-3.6-flash"];
+const KIND_RU = { grammar: "Грамматика", word: "Слово", textbook: "Как в учебнике", pronunciation: "Произношение" };
+
+// ---------- хранилище (только на этом устройстве) ----------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+
+let apiKey = store.get("key", "");
+let history = store.get("history", []);   // {role:'user'|'model', text, fixes?, ru?, phrases?}
+let rate = store.get("rate", 0.95);
+let voiceName = store.get("voice", "");
+
+const $ = id => document.getElementById(id);
+const chat = $("chat");
+
+// ---------- состояние интерфейса ----------
+function setMode(mode, statusText) {
+  document.body.classList.remove("listening", "thinking", "speaking");
+  if (mode) document.body.classList.add(mode);
+  $("status").textContent = statusText || "Los Angeles";
+  $("mic").textContent = mode === "listening" ? "■" : "🎙";
+}
+
+function toast(text) {
+  const t = $("toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+// ---------- чат ----------
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function renderEntry(m) {
+  if (m.role === "user") {
+    if (m.text) chat.append(el("div", "msg me", m.text));
+    if (m.fixes && m.fixes.length) {
+      for (const f of m.fixes) {
+        const card = el("div", "fix");
+        card.append(el("div", "kind", KIND_RU[f.kind] || "Поправка"));
+        const line = el("div");
+        line.append(el("span", "was", f.original), document.createTextNode(" → "), el("span", "better", f.better));
+        card.append(line, el("div", "why", f.why_ru));
+        chat.append(card);
+      }
+    } else if (m.text && m.spoken) {
+      chat.append(el("div", "ok", "✓ Звучит естественно"));
+    }
+    return;
+  }
+  const b = el("div", "msg mia", m.text);
+  const extra = el("div");
+  extra.hidden = true;
+  if (m.ru) extra.append(el("div", "ru", m.ru));
+  for (const p of m.phrases || []) {
+    const d = el("div", "phrase");
+    d.append(el("b", "", p.phrase), document.createTextNode(" - " + p.meaning_ru));
+    extra.append(d);
+  }
+  const tools = el("div", "tools");
+  const say = el("button", "", "🔊 Ещё раз");
+  say.onclick = () => speak(m.text);
+  const tr = el("button", "", "Перевод");
+  tr.onclick = () => { extra.hidden = !extra.hidden; };
+  tools.append(say, tr);
+  b.append(extra, tools);
+  chat.append(b);
+}
+
+function renderAll() {
+  chat.innerHTML = "";
+  if (!history.length) {
+    chat.append(el("div", "hint", "Нажмите 🎙 - Mia поздоровается. Дальше: 🎙 - говорите - ■. Если что-то прозвучит не так, Mia покажет, как сказали бы в Америке."));
+    return;
+  }
+  history.forEach(renderEntry);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+// ---------- Gemini ----------
+async function askGemini(lastParts) {
+  const contents = history.slice(-30).map(m => ({ role: m.role, parts: [{ text: m.text || "..." }] }));
+  if (contents.length && contents[0].role === "model") contents.unshift({ role: "user", parts: [{ text: "(start)" }] });
+  contents.push({ role: "user", parts: lastParts });
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: SYSTEM }] },
+    contents,
+    generationConfig: { responseMimeType: "application/json", responseSchema: SCHEMA, temperature: 0.9 }
+  });
+
+  for (let i = 0; i < MODELS.length; i++) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${MODELS[i]}:generateContent`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+      body
+    });
+    if (res.status === 404 && i < MODELS.length - 1) continue;
+    if (!res.ok) {
+      const err = await res.text();
+      if (res.status === 429) throw new Error("Бесплатный лимит на минуту исчерпан - подождите немного и попробуйте снова.");
+      if (res.status === 400 && /API key/i.test(err)) throw new Error("Ключ Gemini не подошёл - проверьте его в настройках.");
+      if (res.status === 403) throw new Error("Ключ Gemini не подошёл или не активирован - проверьте его в настройках.");
+      throw new Error("Ошибка Gemini " + res.status);
+    }
+    const data = await res.json();
+    const text = (data.candidates?.[0]?.content?.parts || []).filter(p => !p.thought).map(p => p.text || "").join("");
+    if (!text) throw new Error("Mia не ответила - попробуйте ещё раз.");
+    return JSON.parse(text);
+  }
+}
+
+async function turn(lastParts, meta) {
+  if (!apiKey) { openSettings(); return; }
+  setMode("thinking", "думает…");
+  try {
+    const r = await askGemini(lastParts);
+    if (!meta.start) history.push({ role: "user", text: r.heard || meta.typed || "", fixes: r.fixes || [], spoken: !!meta.spoken });
+    history.push({ role: "model", text: r.reply, ru: r.reply_ru, phrases: r.phrases || [] });
+    if (history.length > 200) history = history.slice(-200);
+    store.set("history", history);
+    renderAll();
+    speak(r.reply);
+  } catch (e) {
+    setMode(null);
+    toast(e.message || "Нет связи - проверьте интернет.");
+  }
+}
+
+// ---------- голос Mia ----------
+let voices = [];
+function loadVoices() {
+  voices = speechSynthesis.getVoices().filter(v => /^en[-_]US/i.test(v.lang));
+  const rank = v => (/premium/i.test(v.name) ? 0 : /enhanced/i.test(v.name) ? 1 : /^(ava|samantha|allison|susan|zoe|nicky)/i.test(v.name) ? 2 : 3);
+  voices.sort((a, b) => rank(a) - rank(b));
+  const sel = $("voiceSelect");
+  sel.innerHTML = "";
+  for (const v of voices) sel.append(new Option(v.name, v.name));
+  if (voiceName && voices.some(v => v.name === voiceName)) sel.value = voiceName;
+}
+speechSynthesis.onvoiceschanged = loadVoices;
+loadVoices();
+
+let speaking = false;
+let mouthBoost = 0;
+function speak(text) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "en-US";
+  u.rate = rate;
+  const v = voices.find(v => v.name === voiceName) || voices[0];
+  if (v) u.voice = v;
+  const done = () => { speaking = false; setMode(null); };
+  u.onend = done;
+  u.onerror = done;
+  u.onboundary = () => { mouthBoost = 1; };
+  speaking = true;
+  setMode("speaking", "говорит…");
+  speechSynthesis.speak(u);
+}
+
+// ---------- анимация аватара ----------
+const mouth = $("mouth"), smile = $("smile"), ring = $("ring");
+let level = 0;
+function animate(t) {
+  if (speaking) {
+    mouthBoost *= 0.9;
+    const open = 0.25 + 0.5 * Math.abs(Math.sin(t / 70)) * Math.abs(Math.sin(t / 190)) + 0.35 * mouthBoost;
+    mouth.setAttribute("ry", (2 + open * 7).toFixed(1));
+    mouth.setAttribute("opacity", "1");
+    smile.setAttribute("opacity", "0");
+  } else {
+    mouth.setAttribute("opacity", "0");
+    smile.setAttribute("opacity", "1");
+  }
+  ring.style.transform = document.body.classList.contains("listening") ? `scale(${1 + Math.min(level * 6, 0.12)})` : "";
+  requestAnimationFrame(animate);
+}
+requestAnimationFrame(animate);
+
+function blink() {
+  const eyes = $("eyes");
+  eyes.classList.add("blink");
+  setTimeout(() => eyes.classList.remove("blink"), 130);
+  setTimeout(blink, 2500 + Math.random() * 3000);
+}
+setTimeout(blink, 2500);
+
+// ---------- запись голоса (WAV 16 кГц) ----------
+const rec = { ctx: null, stream: null, src: null, proc: null, chunks: [], started: 0, timer: null };
+
+async function startRecording() {
+  speechSynthesis.cancel();
+  speaking = false;
+  // AudioContext создаём сразу в обработчике нажатия - иначе iOS его не запустит
+  rec.ctx = new (window.AudioContext || window.webkitAudioContext)();
+  rec.ctx.resume();
+  try {
+    rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+  } catch {
+    rec.ctx.close();
+    toast("Нет доступа к микрофону. Разрешите его в настройках Safari для этого сайта.");
+    return;
+  }
+  rec.src = rec.ctx.createMediaStreamSource(rec.stream);
+  rec.proc = rec.ctx.createScriptProcessor(4096, 1, 1);
+  rec.chunks = [];
+  rec.proc.onaudioprocess = e => {
+    const data = e.inputBuffer.getChannelData(0);
+    rec.chunks.push(new Float32Array(data));
+    let sum = 0;
+    for (let i = 0; i < data.length; i += 16) sum += data[i] * data[i];
+    level = Math.sqrt(sum / (data.length / 16));
+  };
+  rec.src.connect(rec.proc);
+  rec.proc.connect(rec.ctx.destination);
+  rec.started = Date.now();
+  setMode("listening", "слушает… нажмите ■, когда закончите");
+  rec.timer = setTimeout(stopRecording, 60000);
+}
+
+function stopRecording() {
+  clearTimeout(rec.timer);
+  if (!rec.proc) return;
+  rec.proc.disconnect();
+  rec.src.disconnect();
+  rec.stream.getTracks().forEach(t => t.stop());
+  const sampleRate = rec.ctx.sampleRate;
+  rec.ctx.close();
+  rec.proc = null;
+  level = 0;
+
+  const seconds = (Date.now() - rec.started) / 1000;
+  if (seconds < 0.6) { setMode(null); toast("Слишком коротко - нажмите 🎙, скажите фразу и нажмите ■."); return; }
+
+  const wav = encodeWav(rec.chunks, sampleRate, 16000);
+  turn([
+    { inlineData: { mimeType: "audio/wav", data: toBase64(wav) } },
+    { text: "(This is my voice message. Transcribe it into \"heard\" and reply.)" }
+  ], { spoken: true });
+}
+
+function encodeWav(chunks, inRate, outRate) {
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  const input = new Float32Array(total);
+  let off = 0;
+  for (const c of chunks) { input.set(c, off); off += c.length; }
+
+  const ratio = inRate / outRate;
+  const outLen = Math.floor(total / ratio);
+  const buf = new ArrayBuffer(44 + outLen * 2);
+  const v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + outLen * 2, true); w(8, "WAVE");
+  w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, outRate, true); v.setUint32(28, outRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, outLen * 2, true);
+  for (let i = 0; i < outLen; i++) {
+    const start = Math.floor(i * ratio), end = Math.min(Math.floor((i + 1) * ratio), total);
+    let s = 0;
+    for (let j = start; j < end; j++) s += input[j];
+    s = Math.max(-1, Math.min(1, s / Math.max(1, end - start)));
+    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return buf;
+}
+
+function toBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+// ---------- кнопки ----------
+let unlocked = false;
+function unlockSpeech() {
+  // iOS разрешает голос только после первого касания
+  if (unlocked) return;
+  unlocked = true;
+  speechSynthesis.speak(new SpeechSynthesisUtterance(""));
+}
+
+$("mic").onclick = () => {
+  unlockSpeech();
+  if (!apiKey) { openSettings(); return; }
+  if (document.body.classList.contains("thinking")) return;
+  if (rec.proc) { stopRecording(); return; }
+  if (!history.length) { turn([{ text: "(Jamilya just opened the app. Greet her casually like a friend and ask one easy question to start chatting. Set heard to \"\".)" }], { start: true }); return; }
+  startRecording();
+};
+
+$("kbBtn").onclick = () => {
+  document.body.classList.toggle("typing");
+  if (document.body.classList.contains("typing")) $("typeInput").focus();
+};
+
+$("typeForm").onsubmit = e => {
+  e.preventDefault();
+  unlockSpeech();
+  const text = $("typeInput").value.trim();
+  if (!text || document.body.classList.contains("thinking")) return;
+  $("typeInput").value = "";
+  turn([{ text: "(typed) " + text }], { typed: text });
+};
+
+// ---------- настройки ----------
+function openSettings() {
+  $("keyInput").value = apiKey;
+  $("rateInput").value = rate;
+  loadVoices();
+  $("settings").showModal();
+}
+$("settingsBtn").onclick = openSettings;
+$("saveBtn").onclick = () => {
+  apiKey = $("keyInput").value.trim();
+  rate = parseFloat($("rateInput").value);
+  voiceName = $("voiceSelect").value;
+  store.set("key", apiKey);
+  store.set("rate", rate);
+  store.set("voice", voiceName);
+  $("settings").close();
+};
+$("resetBtn").onclick = () => {
+  history = [];
+  store.set("history", history);
+  renderAll();
+  $("settings").close();
+};
+
+renderAll();
+if (!apiKey) openSettings();
+</script>
+</body>
+</html>
