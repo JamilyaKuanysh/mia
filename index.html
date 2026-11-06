@@ -155,6 +155,29 @@
   .row { display: flex; gap: 10px; margin-top: 20px; }
   .row button { flex: 1; padding: 12px; border-radius: 12px; border: 0; background: var(--bg); }
   .row .primary { background: var(--accent); color: #fff; }
+  .icon-btn { position: relative; }
+  .badge {
+    position: absolute; top: -4px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px;
+    border-radius: 10px; background: var(--accent); color: #fff; font-size: 12px; line-height: 20px; text-align: center;
+  }
+  .badge:empty { display: none; }
+  .fix .say { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+  .play {
+    border: 0; background: var(--card); border-radius: 14px; padding: 3px 10px; font-size: 14px;
+    box-shadow: var(--shadow);
+  }
+  .sound { color: var(--fix); font-size: 14px; margin-top: 2px; }
+  .fix .was-line { font-size: 14px; color: var(--muted); margin-top: 4px; }
+  dialog.full {
+    width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; margin: 0; border-radius: 0;
+    padding: calc(env(safe-area-inset-top) + 12px) 16px calc(env(safe-area-inset-bottom) + 16px);
+    background: var(--bg); overflow-y: auto;
+  }
+  .dict-head { display: flex; justify-content: space-between; align-items: center; }
+  .dict-head h2 { margin: 0; }
+  #dictList { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+  #dictList .fix { align-self: stretch; max-width: none; position: relative; padding-right: 36px; }
+  .del { position: absolute; top: 8px; right: 8px; border: 0; background: none; color: var(--muted); font-size: 16px; }
   #toast {
     position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom) + 100px); transform: translateX(-50%);
     background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px;
@@ -192,6 +215,7 @@
     <b>Mia</b>
     <div class="status" id="status">Los Angeles</div>
   </div>
+  <button class="icon-btn" id="dictBtn" aria-label="Словарь">📖<span class="badge" id="dictCount"></span></button>
   <button class="icon-btn" id="settingsBtn" aria-label="Настройки">⚙︎</button>
 </header>
 
@@ -214,16 +238,28 @@
   <div class="small">Бесплатно: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key. Ключ хранится только на этом телефоне.</div>
 
   <label for="voiceSelect">Голос Mia</label>
-  <select id="voiceSelect"></select>
-  <div class="small">Самый живой голос: Настройки iPhone → Универсальный доступ → Устный контент → Голоса → English → скачайте «Ava (Premium)».</div>
+  <div style="display:flex; gap:8px">
+    <select id="voiceSelect" style="flex:1; min-width:0"></select>
+    <button id="previewBtn" type="button" class="play">▶ Послушать</button>
+  </div>
+  <div class="small">Живые голоса Gemini звучат как человек, бесплатно, нужен интернет. Голоса iPhone - запасной вариант без интернета.</div>
 
-  <label for="rateInput">Скорость речи</label>
+  <label for="rateInput">Скорость голосов iPhone</label>
   <input id="rateInput" type="range" min="0.7" max="1.15" step="0.05">
 
   <div class="row">
     <button id="resetBtn" type="button">Новый разговор</button>
     <button id="saveBtn" type="button" class="primary">Готово</button>
   </div>
+</dialog>
+
+<dialog id="dict" class="full">
+  <div class="dict-head">
+    <h2>Словарь</h2>
+    <button class="icon-btn" id="dictClose" aria-label="Закрыть">✕</button>
+  </div>
+  <div class="small" id="dictInfo"></div>
+  <div id="dictList"></div>
 </dialog>
 
 <div id="toast"></div>
@@ -243,6 +279,7 @@ Corrections ("fixes"):
 - At most 2 fixes per turn, the most useful ones. Don't nitpick. If it sounded natural, return an empty array.
 - original: the exact fragment she said. better: how an American would naturally say it. why_ru: 1-2 short sentences in simple Russian explaining why, addressing her as «Вы».
 - kind: grammar, word, textbook or pronunciation.
+- say_ru: how "better" sounds in natural relaxed American speech, written in Russian letters, with real reductions (gonna, wanna, t-flapping), stressed words in CAPS. Example: "I'm good, thanks!" -> "айм гуд, СЭНКС"; "What are you gonna do?" -> "уАдър ю ганна ДУ".
 - Don't mention corrections in "reply" - reply naturally like a friend; the app shows fixes separately.
 
 Other fields:
@@ -262,9 +299,10 @@ const SCHEMA = {
           original: { type: "STRING" },
           better: { type: "STRING" },
           why_ru: { type: "STRING" },
-          kind: { type: "STRING", enum: ["grammar", "word", "textbook", "pronunciation"] }
+          kind: { type: "STRING", enum: ["grammar", "word", "textbook", "pronunciation"] },
+          say_ru: { type: "STRING" }
         },
-        required: ["original", "better", "why_ru", "kind"]
+        required: ["original", "better", "why_ru", "kind", "say_ru"]
       }
     },
     reply: { type: "STRING" },
@@ -294,7 +332,6 @@ const store = {
 let apiKey = store.get("key", "");
 let history = store.get("history", []);   // {role:'user'|'model', text, fixes?, ru?, phrases?}
 let rate = store.get("rate", 0.95);
-let voiceName = store.get("voice", "");
 
 const $ = id => document.getElementById(id);
 const chat = $("chat");
@@ -323,18 +360,30 @@ function el(tag, cls, text) {
   return e;
 }
 
+function fixCard(f) {
+  const card = el("div", "fix");
+  card.append(el("div", "kind", KIND_RU[f.kind] || "Поправка"));
+  const say = el("div", "say");
+  const play = el("button", "play", "🔊");
+  play.setAttribute("aria-label", "Произнести");
+  play.onclick = () => speak(f.better);
+  const slow = el("button", "play", "🐢");
+  slow.setAttribute("aria-label", "Произнести медленно");
+  slow.onclick = () => speak(f.better, true);
+  say.append(el("span", "better", f.better), play, slow);
+  card.append(say);
+  if (f.say_ru) card.append(el("div", "sound", "[" + f.say_ru + "]"));
+  const was = el("div", "was-line", "вместо: ");
+  was.append(el("span", "was", f.original));
+  card.append(was, el("div", "why", f.why_ru));
+  return card;
+}
+
 function renderEntry(m) {
   if (m.role === "user") {
     if (m.text) chat.append(el("div", "msg me", m.text));
     if (m.fixes && m.fixes.length) {
-      for (const f of m.fixes) {
-        const card = el("div", "fix");
-        card.append(el("div", "kind", KIND_RU[f.kind] || "Поправка"));
-        const line = el("div");
-        line.append(el("span", "was", f.original), document.createTextNode(" → "), el("span", "better", f.better));
-        card.append(line, el("div", "why", f.why_ru));
-        chat.append(card);
-      }
+      for (const f of m.fixes) chat.append(fixCard(f));
     } else if (m.text && m.spoken) {
       chat.append(el("div", "ok", "✓ Звучит естественно"));
     }
@@ -417,6 +466,7 @@ async function turn(lastParts, meta) {
   try {
     const r = await askGemini(lastParts);
     if (!meta.start) history.push({ role: "user", text: r.heard || meta.typed || "", fixes: r.fixes || [], spoken: !!meta.spoken });
+    addToDict(r.fixes || []);
     history.push({ role: "model", text: r.reply, ru: r.reply_ru, phrases: r.phrases || [] });
     if (history.length > 200) history = history.slice(-200);
     store.set("history", history);
@@ -429,44 +479,306 @@ async function turn(lastParts, meta) {
 }
 
 // ---------- голос Mia ----------
+// Живые голоса Gemini (бесплатно, нужен интернет); голоса iPhone - запасной вариант
+const AI_VOICES = [
+  ["Aoede", "Aoede - лёгкий, непринуждённый"],
+  ["Leda", "Leda - молодой"],
+  ["Callirrhoe", "Callirrhoe - спокойный"],
+  ["Sulafat", "Sulafat - тёплый"],
+  ["Laomedeia", "Laomedeia - бодрый"],
+  ["Achernar", "Achernar - мягкий"],
+  ["Zephyr", "Zephyr - яркий"]
+];
+let voiceChoice = store.get("voice2", "ai:Aoede");
+
 let voices = [];
 function loadVoices() {
   voices = speechSynthesis.getVoices().filter(v => /^en[-_]US/i.test(v.lang));
   const rank = v => (/premium/i.test(v.name) ? 0 : /enhanced/i.test(v.name) ? 1 : /^(ava|samantha|allison|susan|zoe|nicky)/i.test(v.name) ? 2 : 3);
   voices.sort((a, b) => rank(a) - rank(b));
   const sel = $("voiceSelect");
+  const keep = sel.value || voiceChoice;
   sel.innerHTML = "";
-  for (const v of voices) sel.append(new Option(v.name, v.name));
-  if (voiceName && voices.some(v => v.name === voiceName)) sel.value = voiceName;
+  const g1 = document.createElement("optgroup");
+  g1.label = "Живые голоса (Gemini)";
+  for (const [id, name] of AI_VOICES) g1.append(new Option(name, "ai:" + id));
+  const g2 = document.createElement("optgroup");
+  g2.label = "Голоса iPhone";
+  for (const v of voices) g2.append(new Option(v.name, "dev:" + v.name));
+  sel.append(g1, g2);
+  sel.value = keep;
+  if (sel.value !== keep) sel.value = "ai:Aoede";
 }
 speechSynthesis.onvoiceschanged = loadVoices;
-loadVoices();
+
+// кэш озвучки: в памяти последние ответы, короткие фразы словаря - на телефоне (IndexedDB)
+const memCache = new Map();
+let dbPromise = null;
+function db() {
+  if (!dbPromise) dbPromise = new Promise(resolve => {
+    try {
+      const r = indexedDB.open("mia", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("tts");
+      r.onsuccess = () => resolve(r.result);
+      r.onerror = () => resolve(null);
+    } catch { resolve(null); }
+  });
+  return dbPromise;
+}
+async function cacheGet(k) {
+  if (memCache.has(k)) return memCache.get(k);
+  const d = await db();
+  if (!d) return null;
+  return new Promise(res => {
+    try {
+      const q = d.transaction("tts").objectStore("tts").get(k);
+      q.onsuccess = () => res(q.result || null);
+      q.onerror = () => res(null);
+    } catch { res(null); }
+  });
+}
+async function cachePut(k, v, text) {
+  memCache.set(k, v);
+  if (memCache.size > 30) memCache.delete(memCache.keys().next().value);
+  if (text.length > 80) return;
+  const d = await db();
+  try { if (d) d.transaction("tts", "readwrite").objectStore("tts").put(v, k); } catch {}
+}
+
+function findAudio(o) {
+  if (!o || typeof o !== "object") return null;
+  if (o.inlineData && typeof o.inlineData.data === "string") return o.inlineData;
+  if (typeof o.data === "string" && (o.type === "audio" || /^audio/i.test(o.mime_type || o.mimeType || ""))) return o;
+  for (const v of Object.values(o)) { const f = findAudio(v); if (f) return f; }
+  return null;
+}
+
+function fromBase64(b64) {
+  const bin = atob(b64);
+  const u = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+  return u.buffer;
+}
+
+// Gemini отдаёт либо готовый WAV, либо «сырой» PCM 16 бит - тогда дописываем заголовок
+function asWav(buf, mime) {
+  const b = new Uint8Array(buf);
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) return buf;
+  const rateHz = +((mime || "").match(/rate=(\d+)/) || [0, 24000])[1];
+  const out = new ArrayBuffer(44 + b.length);
+  const v = new DataView(out);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + b.length, true); w(8, "WAVE");
+  w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rateHz, true); v.setUint32(28, rateHz * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, b.length, true);
+  new Uint8Array(out, 44).set(b);
+  return out;
+}
+
+async function ttsFetch(text, voice, slow) {
+  const style = slow
+    ? "slowly and clearly, like showing a friend how to pronounce it, natural American pronunciation"
+    : "casual, warm and friendly, like chatting with a friend, natural relaxed American conversational pace";
+  const attempts = [
+    ...["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"].map(model => ({
+      url: "https://generativelanguage.googleapis.com/v1beta/interactions",
+      body: {
+        model,
+        input: [{ type: "user_input", content: [{ type: "text", text, annotations: [{ type: "speech_metadata", style }] }] }],
+        response_format: { type: "audio" },
+        generation_config: { speech_config: [{ voice }] }
+      }
+    })),
+    ...["gemini-3.1-flash-tts-preview", "gemini-2.5-flash-preview-tts"].map(model => ({
+      url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      body: {
+        contents: [{ parts: [{ text: `Say it ${style}: ${text}` }] }],
+        generationConfig: { responseModalities: ["AUDIO"], speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } } }
+      }
+    }))
+  ];
+  // начинаем с варианта, который сработал в прошлый раз
+  const last = store.get("tts_ok", 0);
+  const order = [attempts[last], ...attempts.filter((_, i) => i !== last)].filter(Boolean);
+  for (const a of order) {
+    try {
+      const res = await fetch(a.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        body: JSON.stringify(a.body)
+      });
+      if (!res.ok) continue;
+      const audio = findAudio(await res.json());
+      if (!audio) continue;
+      store.set("tts_ok", attempts.indexOf(a));
+      return asWav(fromBase64(audio.data), audio.mime_type || audio.mimeType);
+    } catch {}
+  }
+  return null;
+}
+
+let playCtx = null, analyser = null, playing = null;
+function audioCtx() {
+  if (!playCtx) {
+    playCtx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = playCtx.createAnalyser();
+    analyser.fftSize = 512;
+    analyser.connect(playCtx.destination);
+  }
+  if (playCtx.state !== "running") playCtx.resume();
+  return playCtx;
+}
 
 let speaking = false;
+let talk = null;          // null | "ai" | "device" - чем сейчас говорит Mia (для анимации рта)
+let speakToken = 0;
 let mouthBoost = 0;
-function speak(text) {
+let ttsDownUntil = 0;
+let warnedVoice = false;
+
+function stopSpeaking() {
+  speakToken++;
   speechSynthesis.cancel();
+  if (playing) { try { playing.onended = null; playing.stop(); } catch {} playing = null; }
+  speaking = false;
+  talk = null;
+}
+
+function doneSpeaking() {
+  speaking = false;
+  talk = null;
+  playing = null;
+  setMode(null);
+}
+
+async function speak(text, slow = false) {
+  stopSpeaking();
+  const token = speakToken;
+  speaking = true;
+  setMode("speaking", slow ? "произносит медленно…" : "говорит…");
+
+  if (voiceChoice.startsWith("ai:") && apiKey && Date.now() > ttsDownUntil) {
+    const voice = voiceChoice.slice(3);
+    const key = `${voice}|${slow ? 1 : 0}|${text}`;
+    let buf = await cacheGet(key);
+    if (!buf) {
+      buf = await ttsFetch(text, voice, slow);
+      // если живой голос недоступен (лимит, нет связи) - 5 минут не пробуем, чтобы не тормозить
+      if (buf) cachePut(key, buf, text); else ttsDownUntil = Date.now() + 5 * 60000;
+    }
+    if (token !== speakToken) return;
+    if (buf) {
+      try {
+        const ctx = audioCtx();
+        const audio = await ctx.decodeAudioData(buf.slice(0));
+        if (token !== speakToken) return;
+        const src = ctx.createBufferSource();
+        src.buffer = audio;
+        src.connect(analyser);
+        src.onended = () => { if (token === speakToken) doneSpeaking(); };
+        playing = src;
+        talk = "ai";
+        src.start();
+        return;
+      } catch {}
+    }
+    if (!warnedVoice) { warnedVoice = true; toast("Живой голос сейчас недоступен - пока говорю голосом iPhone."); }
+  }
+
   const u = new SpeechSynthesisUtterance(text);
   u.lang = "en-US";
-  u.rate = rate;
-  const v = voices.find(v => v.name === voiceName) || voices[0];
+  u.rate = slow ? 0.7 : rate;
+  const name = voiceChoice.startsWith("dev:") ? voiceChoice.slice(4) : "";
+  const v = voices.find(v => v.name === name) || voices[0];
   if (v) u.voice = v;
-  const done = () => { speaking = false; setMode(null); };
+  const done = () => { if (token === speakToken) doneSpeaking(); };
   u.onend = done;
   u.onerror = done;
   u.onboundary = () => { mouthBoost = 1; };
-  speaking = true;
-  setMode("speaking", "говорит…");
+  talk = "device";
   speechSynthesis.speak(u);
 }
+
+// ---------- словарь ----------
+let dict = store.get("dict", null);
+if (!dict) {
+  // первый запуск словаря: забираем исправления из уже прошедших разговоров
+  dict = [];
+  for (const m of history) for (const f of m.fixes || []) dict.unshift({ ...f, ts: Date.now() });
+  store.set("dict", dict);
+}
+
+function addToDict(fixes) {
+  let added = 0;
+  for (const f of fixes) {
+    const k = f.better.trim().toLowerCase();
+    if (dict.some(d => d.better.trim().toLowerCase() === k)) continue;
+    dict.unshift({ better: f.better, original: f.original, why_ru: f.why_ru, say_ru: f.say_ru || "", kind: f.kind, ts: Date.now() });
+    added++;
+  }
+  if (added) {
+    store.set("dict", dict);
+    renderDictCount();
+    if (!store.get("dict_hint", false)) {
+      store.set("dict_hint", true);
+      toast("Исправления сохраняются в словарь - кнопка 📖 вверху.");
+    }
+  }
+}
+
+function renderDictCount() {
+  $("dictCount").textContent = dict.length ? String(dict.length) : "";
+}
+
+function renderDict() {
+  const list = $("dictList");
+  list.innerHTML = "";
+  $("dictInfo").textContent = dict.length
+    ? `${dict.length} ${plural(dict.length, "фраза", "фразы", "фраз")}. Новые сверху. 🔊 - произношение, 🐢 - медленно.`
+    : "Пока пусто. Когда Mia поправит Вас в разговоре, исправление появится здесь.";
+  dict.forEach((f, i) => {
+    const card = fixCard(f);
+    const del = el("button", "del", "✕");
+    del.setAttribute("aria-label", "Удалить");
+    del.onclick = () => {
+      dict.splice(i, 1);
+      store.set("dict", dict);
+      renderDict();
+      renderDictCount();
+    };
+    card.append(del);
+    list.append(card);
+  });
+}
+
+function plural(n, one, few, many) {
+  const a = n % 10, b = n % 100;
+  if (a === 1 && b !== 11) return one;
+  if (a >= 2 && a <= 4 && (b < 12 || b > 14)) return few;
+  return many;
+}
+
+$("dictBtn").onclick = () => { renderDict(); $("dict").showModal(); };
+$("dictClose").onclick = () => $("dict").close();
 
 // ---------- анимация аватара ----------
 const mouth = $("mouth"), smile = $("smile"), ring = $("ring");
 let level = 0;
+let ampBuf = null;
 function animate(t) {
-  if (speaking) {
-    mouthBoost *= 0.9;
-    const open = 0.25 + 0.5 * Math.abs(Math.sin(t / 70)) * Math.abs(Math.sin(t / 190)) + 0.35 * mouthBoost;
+  if (talk) {
+    let open;
+    if (talk === "ai") {
+      ampBuf = ampBuf || new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(ampBuf);
+      let peak = 0;
+      for (let i = 0; i < ampBuf.length; i++) peak = Math.max(peak, Math.abs(ampBuf[i] - 128));
+      open = Math.min(1, peak / 45);
+    } else {
+      mouthBoost *= 0.9;
+      open = 0.25 + 0.5 * Math.abs(Math.sin(t / 70)) * Math.abs(Math.sin(t / 190)) + 0.35 * mouthBoost;
+    }
     mouth.setAttribute("ry", (2 + open * 7).toFixed(1));
     mouth.setAttribute("opacity", "1");
     smile.setAttribute("opacity", "0");
@@ -491,8 +803,7 @@ setTimeout(blink, 2500);
 const rec = { ctx: null, stream: null, src: null, proc: null, chunks: [], started: 0, timer: null };
 
 async function startRecording() {
-  speechSynthesis.cancel();
-  speaking = false;
+  stopSpeaking();
   // AudioContext создаём сразу в обработчике нажатия - иначе iOS его не запустит
   rec.ctx = new (window.AudioContext || window.webkitAudioContext)();
   rec.ctx.resume();
@@ -530,6 +841,7 @@ function stopRecording() {
   rec.ctx.close();
   rec.proc = null;
   level = 0;
+  audioCtx();
 
   const seconds = (Date.now() - rec.started) / 1000;
   if (seconds < 0.6) { setMode(null); toast("Слишком коротко - нажмите 🎙, скажите фразу и нажмите ■."); return; }
@@ -576,7 +888,8 @@ function toBase64(buf) {
 // ---------- кнопки ----------
 let unlocked = false;
 function unlockSpeech() {
-  // iOS разрешает голос только после первого касания
+  // iOS разрешает звук только после касания
+  audioCtx();
   if (unlocked) return;
   unlocked = true;
   speechSynthesis.speak(new SpeechSynthesisUtterance(""));
@@ -613,13 +926,22 @@ function openSettings() {
   $("settings").showModal();
 }
 $("settingsBtn").onclick = openSettings;
+$("previewBtn").onclick = () => {
+  unlockSpeech();
+  apiKey = $("keyInput").value.trim() || apiKey;
+  voiceChoice = $("voiceSelect").value;
+  rate = parseFloat($("rateInput").value);
+  ttsDownUntil = 0;
+  speak("Hey, I'm Mia! So, what's up? Got any fun plans this weekend?");
+};
 $("saveBtn").onclick = () => {
   apiKey = $("keyInput").value.trim();
   rate = parseFloat($("rateInput").value);
-  voiceName = $("voiceSelect").value;
+  voiceChoice = $("voiceSelect").value;
+  ttsDownUntil = 0;
   store.set("key", apiKey);
   store.set("rate", rate);
-  store.set("voice", voiceName);
+  store.set("voice2", voiceChoice);
   $("settings").close();
 };
 $("resetBtn").onclick = () => {
@@ -629,7 +951,9 @@ $("resetBtn").onclick = () => {
   $("settings").close();
 };
 
+loadVoices();
 renderAll();
+renderDictCount();
 if (!apiKey) openSettings();
 </script>
 </body>
