@@ -265,6 +265,16 @@
 <div id="toast"></div>
 
 <script>
+// ---------- обновление: телефон может держать старую копию приложения ----------
+const VERSION = "2026-11-09";
+fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" })
+  .then(r => r.text())
+  .then(t => {
+    const m = t.match(/const VERSION = "([^"]+)"/);
+    if (m && m[1] !== VERSION) location.replace(location.pathname + "?v=" + m[1]);
+  })
+  .catch(() => {});
+
 const SYSTEM = `You are Mia, a friendly 28-year-old from Los Angeles. You're chatting by voice with Jamilya, a Russian-speaking woman from Almaty, Kazakhstan. She wants to speak the way real Americans talk in everyday life, not textbook English.
 
 How you talk:
