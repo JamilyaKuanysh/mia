@@ -267,7 +267,7 @@
 
 <script>
 // ---------- обновление: телефон может держать старую копию приложения ----------
-const VERSION = "2026-11-09e";
+const VERSION = "2026-11-09f";
 fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" })
   .then(r => r.text())
   .then(t => {
@@ -647,16 +647,39 @@ async function ttsFetch(text, voice, slow) {
   return null;
 }
 
-let playCtx = null, analyser = null, playing = null;
-function audioCtx() {
-  if (!playCtx) {
-    playCtx = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = playCtx.createAnalyser();
-    analyser.fftSize = 512;
-    analyser.connect(playCtx.destination);
+// Живой голос играем обычным аудиоплеером, а не через Web Audio:
+// на iPhone Web Audio молчит в бесшумном режиме (рот двигается, звука нет), а плеер - нет
+const player = new Audio();
+player.setAttribute("playsinline", "");
+let playerUrl = null;
+let envelope = null;      // громкость кусочками по 30 мс - чтобы рот двигался в такт
+
+function audioSession(type) {
+  try { if (navigator.audioSession) navigator.audioSession.type = type; } catch {}
+}
+
+// разбираем WAV: общая громкость (проверка на тишину) и огибающая для анимации рта
+function wavStats(buf) {
+  const v = new DataView(buf);
+  let off = 12, rateHz = 24000, bits = 16, data = -1, len = 0;
+  while (off + 8 <= v.byteLength) {
+    const id = String.fromCharCode(v.getUint8(off), v.getUint8(off + 1), v.getUint8(off + 2), v.getUint8(off + 3));
+    const size = v.getUint32(off + 4, true);
+    if (id === "fmt ") { rateHz = v.getUint32(off + 12, true); bits = v.getUint16(off + 22, true); }
+    if (id === "data") { data = off + 8; len = Math.min(size, v.byteLength - data); break; }
+    off += 8 + size + (size % 2);
   }
-  if (playCtx.state !== "running") playCtx.resume();
-  return playCtx;
+  if (data < 0 || bits !== 16) return null;
+  const n = Math.floor(len / 2), win = Math.max(1, Math.floor(rateHz * 0.03));
+  const env = [];
+  let peak = 0;
+  for (let i = 0; i < n; i += win) {
+    let m = 0;
+    for (let j = i; j < Math.min(n, i + win); j += 2) m = Math.max(m, Math.abs(v.getInt16(data + j * 2, true)) / 32768);
+    env.push(m);
+    peak = Math.max(peak, m);
+  }
+  return { peak, env, duration: n / rateHz, rateHz };
 }
 
 let speaking = false;
@@ -669,7 +692,7 @@ let warnedVoice = false;
 function stopSpeaking() {
   speakToken++;
   speechSynthesis.cancel();
-  if (playing) { try { playing.onended = null; playing.stop(); } catch {} playing = null; }
+  try { player.onended = null; player.pause(); } catch {}
   speaking = false;
   talk = null;
 }
@@ -677,7 +700,6 @@ function stopSpeaking() {
 function doneSpeaking() {
   speaking = false;
   talk = null;
-  playing = null;
   setMode(null);
 }
 
@@ -713,30 +735,30 @@ async function speak(text, slow = false, btn = null) {
     if (token !== speakToken) { ready(); return; }
     if (buf) {
       try {
-        const ctx = audioCtx();
-        const audio = await ctx.decodeAudioData(buf.slice(0));
-        if (token !== speakToken) { ready(); return; }
-        const ch = audio.getChannelData(0);
-        let peak = 0;
-        for (let i = 0; i < ch.length; i += 4) peak = Math.max(peak, Math.abs(ch[i]));
-        lastTts += `длина ${audio.duration.toFixed(1)} с, громкость ${peak.toFixed(3)}`;
-        if (peak < 0.003) {
-          cacheDelete(key);
-          ttsDownUntil = Date.now() + 5 * 60000;
-          throw new Error("тишина");
+        const st = wavStats(buf);
+        if (st) {
+          lastTts += `длина ${st.duration.toFixed(1)} с, ${st.rateHz} Гц, громкость ${st.peak.toFixed(3)}`;
+          if (st.peak < 0.003) {
+            cacheDelete(key);
+            ttsDownUntil = Date.now() + 5 * 60000;
+            throw new Error("тишина");
+          }
         }
         // в память кладём только проверенный звук
         if (fresh) cachePut(key, buf, text);
-        const src = ctx.createBufferSource();
-        src.buffer = audio;
-        src.connect(analyser);
-        src.onended = () => { if (token === speakToken) doneSpeaking(); };
-        playing = src;
+        if (playerUrl) URL.revokeObjectURL(playerUrl);
+        playerUrl = URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+        envelope = st ? st.env : null;
+        audioSession("playback");
+        player.onended = () => { if (token === speakToken) doneSpeaking(); };
+        player.src = playerUrl;
         talk = "ai";
         ready();
-        src.start();
+        await player.play();
+        lastTts += ", играет";
         return;
       } catch (e) {
+        talk = null;
         if (!/тишина/.test(e.message)) lastTts += " ошибка воспроизведения: " + e.message;
       }
     }
@@ -825,16 +847,11 @@ $("dictClose").onclick = () => $("dict").close();
 // ---------- анимация аватара ----------
 const mouth = $("mouth"), smile = $("smile"), ring = $("ring");
 let level = 0;
-let ampBuf = null;
 function animate(t) {
   if (talk) {
     let open;
-    if (talk === "ai") {
-      ampBuf = ampBuf || new Uint8Array(analyser.fftSize);
-      analyser.getByteTimeDomainData(ampBuf);
-      let peak = 0;
-      for (let i = 0; i < ampBuf.length; i++) peak = Math.max(peak, Math.abs(ampBuf[i] - 128));
-      open = Math.min(1, peak / 45);
+    if (talk === "ai" && envelope) {
+      open = Math.min(1, (envelope[Math.floor(player.currentTime / 0.03)] || 0) / 0.3);
     } else {
       mouthBoost *= 0.9;
       open = 0.25 + 0.5 * Math.abs(Math.sin(t / 70)) * Math.abs(Math.sin(t / 190)) + 0.35 * mouthBoost;
@@ -864,6 +881,7 @@ const rec = { ctx: null, stream: null, src: null, proc: null, chunks: [], starte
 
 async function startRecording() {
   stopSpeaking();
+  audioSession("play-and-record");
   // AudioContext создаём сразу в обработчике нажатия - иначе iOS его не запустит
   rec.ctx = new (window.AudioContext || window.webkitAudioContext)();
   rec.ctx.resume();
@@ -901,7 +919,7 @@ function stopRecording() {
   rec.ctx.close();
   rec.proc = null;
   level = 0;
-  audioCtx();
+  audioSession("playback");
 
   const seconds = (Date.now() - rec.started) / 1000;
   if (seconds < 0.6) { setMode(null); toast("Слишком коротко - нажмите 🎙, скажите фразу и нажмите ■."); return; }
@@ -948,10 +966,12 @@ function toBase64(buf) {
 // ---------- кнопки ----------
 let unlocked = false;
 function unlockSpeech() {
-  // iOS разрешает звук только после касания
-  audioCtx();
+  // iOS разрешает звук только после касания: «прогреваем» плеер и голос устройства тихим звуком
   if (unlocked) return;
   unlocked = true;
+  audioSession("playback");
+  player.src = "data:audio/wav;base64," + toBase64(asWav(new ArrayBuffer(480), "rate=24000"));
+  player.play().catch(() => {});
   speechSynthesis.speak(new SpeechSynthesisUtterance(""));
 }
 
