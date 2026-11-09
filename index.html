@@ -272,7 +272,7 @@
 
 <script>
 // ---------- обновление: телефон может держать старую копию приложения ----------
-const VERSION = "2026-11-10b";
+const VERSION = "2026-11-10c";
 fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" })
   .then(r => r.text())
   .then(t => {
@@ -346,13 +346,29 @@ const store = {
 };
 
 let apiKey = store.get("key", "");
-// личная ссылка «с ключом»: ключ в части после #, она не уходит на сервер и не попадает на GitHub
+// личная ссылка «с ключом»: ключ после #, эта часть не уходит на сервер и не попадает на GitHub.
+// Ключ записан только цифрами и буквами a-f с контрольной суммой: мессенджеры не могут его испортить
+// (Telegram, например, съедает «_» как разметку курсива)
+let linkKey = null;       // "ok" - ключ из ссылки сохранён, иначе текст проблемы
+function keySum(t) {
+  let h = 0;
+  for (const c of t) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return (h & 0xffff).toString(16).padStart(4, "0");
+}
 (function keyFromLink() {
-  const m = location.hash.match(/[#&]k=([\w-]+)/);
-  if (!m) return;
-  apiKey = m[1];
-  store.set("key", apiKey);
+  const hex = location.hash.match(/[#&]h=([0-9a-fA-F]+)/);
+  const raw = location.hash.match(/[#&]k=([\w-]+)/);
+  if (!hex && !raw) return;
   window.history.replaceState(null, "", location.pathname);
+  let key = raw ? raw[1] : "";
+  if (hex) {
+    const h = hex[1].toLowerCase();
+    key = (h.slice(0, -4).match(/../g) || []).map(b => String.fromCharCode(parseInt(b, 16))).join("");
+    if (keySum(key) !== h.slice(-4)) { linkKey = "Ссылка повредилась при пересылке - попросите прислать её ещё раз."; return; }
+  }
+  apiKey = key;
+  store.set("key", apiKey);
+  linkKey = "ok";
 })();
 let history = store.get("history", []);   // {role:'user'|'model', text, fixes?, ru?, phrases?}
 let rate = store.get("rate", 0.95);
@@ -374,7 +390,7 @@ function toast(text) {
   t.textContent = text;
   t.classList.add("show");
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove("show"), 3500);
+  toast.timer = setTimeout(() => t.classList.remove("show"), Math.max(3500, text.length * 70));
 }
 
 // ---------- чат ----------
@@ -1033,7 +1049,8 @@ $("settingsBtn").onclick = openSettings;
 $("shareBtn").onclick = async () => {
   const key = $("keyInput").value.trim() || apiKey;
   if (!key) { $("shareInfo").textContent = "Сначала вставьте свой ключ выше."; return; }
-  const link = location.origin + location.pathname + "#k=" + key;
+  const hex = [...key].map(c => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+  const link = location.origin + location.pathname + "#h=" + hex + keySum(key);
   try {
     await navigator.clipboard.writeText(link);
     $("shareInfo").textContent = "Ссылка скопирована - отправьте её в мессенджере. Открыв её, человек сразу сможет пользоваться приложением.";
@@ -1074,6 +1091,13 @@ loadVoices();
 renderAll();
 renderDictCount();
 if (!apiKey) openSettings();
+// ключ пришёл по ссылке - сразу проверяем, что Google его принимает
+if (linkKey && linkKey !== "ok") toast(linkKey, true);
+if (linkKey === "ok") {
+  fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", { headers: { "x-goog-api-key": apiKey } })
+    .then(async r => toast(r.ok ? "Ключ из ссылки сохранён и работает ✓" : geminiError(r.status, await r.text()), !r.ok))
+    .catch(() => toast("Не удалось проверить ключ - нет связи.", true));
+}
 </script>
 </body>
 </html>
