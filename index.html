@@ -243,6 +243,7 @@
     <button id="previewBtn" type="button" class="play">▶ Послушать</button>
   </div>
   <div class="small">Живые голоса Gemini звучат как человек, бесплатно, нужен интернет. Голоса iPhone - запасной вариант без интернета.</div>
+  <div class="small" id="voiceInfo" style="word-break: break-word"></div>
 
   <label for="rateInput">Скорость голосов iPhone</label>
   <input id="rateInput" type="range" min="0.7" max="1.15" step="0.05">
@@ -266,7 +267,7 @@
 
 <script>
 // ---------- обновление: телефон может держать старую копию приложения ----------
-const VERSION = "2026-11-09b";
+const VERSION = "2026-11-09d";
 fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" })
   .then(r => r.text())
   .then(t => {
@@ -528,7 +529,7 @@ let dbPromise = null;
 function db() {
   if (!dbPromise) dbPromise = new Promise(resolve => {
     try {
-      const r = indexedDB.open("mia", 1);
+      const r = indexedDB.open("mia-voice", 1);
       r.onupgradeneeded = () => r.result.createObjectStore("tts");
       r.onsuccess = () => resolve(r.result);
       r.onerror = () => resolve(null);
@@ -548,6 +549,12 @@ async function cacheGet(k) {
     } catch { res(null); }
   });
 }
+async function cacheDelete(k) {
+  memCache.delete(k);
+  const d = await db();
+  try { if (d) d.transaction("tts", "readwrite").objectStore("tts").delete(k); } catch {}
+}
+
 async function cachePut(k, v, text) {
   memCache.set(k, v);
   if (memCache.size > 30) memCache.delete(memCache.keys().next().value);
@@ -587,6 +594,9 @@ function asWav(buf, mime) {
   return out;
 }
 
+// что пришло от Google в последний раз - показываем в настройках, чтобы понять, если голос молчит
+let lastTts = "";
+
 async function ttsFetch(text, voice, slow) {
   const style = slow
     ? "slowly and clearly, like showing a friend how to pronounce it, natural American pronunciation"
@@ -619,11 +629,16 @@ async function ttsFetch(text, voice, slow) {
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
         body: JSON.stringify(a.body)
       });
-      if (!res.ok) continue;
-      const audio = findAudio(await res.json());
-      if (!audio) continue;
+      const label = a.body.model || a.url.match(/models\/([^:]+)/)[1];
+      if (!res.ok) { lastTts += `${label}: ошибка ${res.status}; `; continue; }
+      const json = await res.json();
+      const audio = findAudio(json);
+      if (!audio) { lastTts += `${label}: нет аудио (${Object.keys(json).join(",")}); `; continue; }
       store.set("tts_ok", attempts.indexOf(a));
-      return asWav(fromBase64(audio.data), audio.mime_type || audio.mimeType);
+      const raw = fromBase64(audio.data);
+      const head = String.fromCharCode(...new Uint8Array(raw, 0, Math.min(4, raw.byteLength)));
+      lastTts += `${label}: ${audio.mime_type || audio.mimeType || "без типа"}, ${raw.byteLength} байт, начало «${head.replace(/[^\x20-\x7e]/g, "?")}»; `;
+      return asWav(raw, audio.mime_type || audio.mimeType);
     } catch {}
   }
   return null;
@@ -678,11 +693,15 @@ async function speak(text, slow = false, btn = null) {
   if (voiceChoice.startsWith("ai:") && apiKey && Date.now() > ttsDownUntil) {
     const voice = voiceChoice.slice(3);
     const key = `${voice}|${slow ? 1 : 0}|${text}`;
+    lastTts = "";
     let buf = await cacheGet(key);
-    if (!buf) {
+    const fresh = !buf;
+    if (fresh) {
       buf = await ttsFetch(text, voice, slow);
       // если живой голос недоступен (лимит, нет связи) - 5 минут не пробуем, чтобы не тормозить
-      if (buf) cachePut(key, buf, text); else ttsDownUntil = Date.now() + 5 * 60000;
+      if (!buf) ttsDownUntil = Date.now() + 5 * 60000;
+    } else {
+      lastTts = "из памяти; ";
     }
     if (token !== speakToken) { ready(); return; }
     if (buf) {
@@ -690,6 +709,17 @@ async function speak(text, slow = false, btn = null) {
         const ctx = audioCtx();
         const audio = await ctx.decodeAudioData(buf.slice(0));
         if (token !== speakToken) { ready(); return; }
+        const ch = audio.getChannelData(0);
+        let peak = 0;
+        for (let i = 0; i < ch.length; i += 4) peak = Math.max(peak, Math.abs(ch[i]));
+        lastTts += `длина ${audio.duration.toFixed(1)} с, громкость ${peak.toFixed(3)}`;
+        if (peak < 0.003) {
+          cacheDelete(key);
+          ttsDownUntil = Date.now() + 5 * 60000;
+          throw new Error("тишина");
+        }
+        // в память кладём только проверенный звук
+        if (fresh) cachePut(key, buf, text);
         const src = ctx.createBufferSource();
         src.buffer = audio;
         src.connect(analyser);
@@ -699,9 +729,11 @@ async function speak(text, slow = false, btn = null) {
         ready();
         src.start();
         return;
-      } catch {}
+      } catch (e) {
+        if (!/тишина/.test(e.message)) lastTts += " ошибка воспроизведения: " + e.message;
+      }
     }
-    if (!warnedVoice) { warnedVoice = true; toast("Живой голос сейчас недоступен - пока говорю голосом iPhone."); }
+    if (!warnedVoice) { warnedVoice = true; toast("Живой голос сейчас недоступен - пока говорю голосом устройства."); }
   }
 
   const u = new SpeechSynthesisUtterance(text);
@@ -716,6 +748,8 @@ async function speak(text, slow = false, btn = null) {
   u.onboundary = () => { mouthBoost = 1; };
   talk = "device";
   ready();
+  lastTts += (lastTts ? " → " : "") + "голос устройства: " + (v ? v.name : "по умолчанию");
+  if (!voices.length) lastTts += " (английских голосов на устройстве не найдено)";
   speechSynthesis.speak(u);
 }
 
@@ -951,7 +985,11 @@ $("previewBtn").onclick = () => {
   voiceChoice = $("voiceSelect").value;
   rate = parseFloat($("rateInput").value);
   ttsDownUntil = 0;
-  speak("Hey, I'm Mia! So, what's up? Got any fun plans this weekend?");
+  memCache.clear();
+  $("voiceInfo").textContent = "Проверяю…";
+  speak("Hey, I'm Mia! So, what's up? Got any fun plans this weekend?", false, $("previewBtn"));
+  // через несколько секунд показываем, что пришло от Google, - пришлите эту строку, если голос молчит
+  setTimeout(() => { $("voiceInfo").textContent = "Проверка: " + (lastTts || "ответа пока нет"); }, 8000);
 };
 $("saveBtn").onclick = () => {
   apiKey = $("keyInput").value.trim();
