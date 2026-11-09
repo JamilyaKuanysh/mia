@@ -235,7 +235,14 @@
 
 <dialog id="settings">
   <h2>Настройки</h2>
-  <label for="keyInput">Ключ Gemini API</label>
+  <label for="claudeKeyInput">Ключ Claude</label>
+  <input id="claudeKeyInput" type="password" autocomplete="off" placeholder="sk-ant-…">
+  <div class="small" id="claudeKeyInfo"></div>
+  <label for="claudeModelSelect">Модель Claude</label>
+  <select id="claudeModelSelect"></select>
+  <div class="small">Платно, с оплатой заранее: <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com</a> → API Keys. Если ключа Claude нет, отвечает бесплатный Gemini.</div>
+
+  <label for="keyInput">Ключ Gemini - для живого голоса Mia</label>
   <input id="keyInput" type="password" autocomplete="off" placeholder="AIza…">
   <div class="small" id="keyInfo"></div>
   <div class="small">Бесплатно: <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> → Create API key. Ключ хранится только на этом телефоне.</div>
@@ -275,7 +282,7 @@
 
 <script>
 // ---------- обновление: телефон может держать старую копию приложения ----------
-const VERSION = "2026-11-10e";
+const VERSION = "2026-11-10f";
 fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" })
   .then(r => r.text())
   .then(t => {
@@ -349,6 +356,8 @@ const store = {
 };
 
 let apiKey = store.get("key", "");
+let claudeKey = store.get("claude_key", "");
+let claudeModel = store.get("claude_model", "claude-opus-5-5");
 // личная ссылка «с ключом»: ключ после #, эта часть не уходит на сервер и не попадает на GitHub.
 // Ключ записан только цифрами и буквами a-f с контрольной суммой: мессенджеры не могут его испортить
 // (Telegram, например, съедает «_» как разметку курсива)
@@ -359,18 +368,21 @@ function keySum(t) {
   return (h & 0xffff).toString(16).padStart(4, "0");
 }
 (function keyFromLink() {
-  const hex = location.hash.match(/[#&]h=([0-9a-fA-F]+)/);
+  const packed = location.hash.match(/[#&][jh]=([0-9a-fA-F]+)/);
   const raw = location.hash.match(/[#&]k=([\w-]+)/);
-  if (!hex && !raw) return;
+  if (!packed && !raw) return;
   window.history.replaceState(null, "", location.pathname);
-  let key = raw ? raw[1] : "";
-  if (hex) {
-    const h = hex[1].toLowerCase();
-    key = (h.slice(0, -4).match(/../g) || []).map(b => String.fromCharCode(parseInt(b, 16))).join("");
-    if (keySum(key) !== h.slice(-4)) { linkKey = "Ссылка повредилась при пересылке - попросите прислать её ещё раз."; return; }
+  let keys = raw ? { g: raw[1] } : null;
+  if (packed) {
+    const h = packed[1].toLowerCase();
+    const text = (h.slice(0, -4).match(/../g) || []).map(b => String.fromCharCode(parseInt(b, 16))).join("");
+    if (keySum(text) !== h.slice(-4)) { linkKey = "Ссылка повредилась при пересылке - попросите прислать её ещё раз."; return; }
+    // #j= - ключи Gemini и Claude вместе, #h= - старая ссылка только с ключом Gemini
+    keys = packed[0].includes("j=") ? JSON.parse(text) : { g: text };
   }
-  apiKey = key;
-  store.set("key", apiKey);
+  if (keys.g) { apiKey = keys.g; store.set("key", apiKey); }
+  if (keys.c) { claudeKey = keys.c; store.set("claude_key", claudeKey); }
+  if (keys.m) { claudeModel = keys.m; store.set("claude_model", claudeModel); }
   linkKey = "ok";
 })();
 let history = store.get("history", []);   // {role:'user'|'model', text, fixes?, ru?, phrases?}
@@ -531,11 +543,147 @@ async function askGemini(lastParts) {
   throw new Error("Серверы Gemini сейчас перегружены - попробуйте через минуту.");
 }
 
+// ---------- Claude: «мозг», если указан ключ Claude (платно, без очередей бесплатного Gemini) ----------
+const CLAUDE_MODELS = [
+  ["claude-opus-5-5", "Claude Opus 5.5 - самая умная"],
+  ["claude-sonnet-5-5", "Claude Sonnet 5.5 - почти как Opus, примерно вдвое дешевле"],
+  ["claude-haiku-5-5", "Claude Haiku 5.5 - самая быстрая и дешёвая"]
+];
+let Anthropic = null;      // библиотека Anthropic, грузится при первом обращении к Claude
+let claudeClient = null, claudeClientKey = "";
+
+async function claude() {
+  if (!Anthropic) Anthropic = (await import("https://cdn.jsdelivr.net/npm/@anthropic-ai/sdk@1.3.0/+esm")).default;
+  if (!claudeClient || claudeClientKey !== claudeKey) {
+    // ключ хранится только на этом устройстве, запросы идут из браузера прямо в Anthropic
+    claudeClient = new Anthropic({ apiKey: claudeKey, dangerouslyAllowBrowser: true, maxRetries: 1, timeout: 45000 });
+    claudeClientKey = claudeKey;
+  }
+  return claudeClient;
+}
+
+// схема ответа в формате Gemini -> JSON Schema для Claude (у каждого объекта все поля обязательны)
+function toJsonSchema(g) {
+  const out = { type: g.type.toLowerCase() };
+  if (g.enum) out.enum = g.enum;
+  if (out.type === "object") {
+    out.properties = Object.fromEntries(Object.entries(g.properties).map(([k, v]) => [k, toJsonSchema(v)]));
+    out.required = Object.keys(g.properties);
+    out.additionalProperties = false;
+  }
+  if (out.type === "array") out.items = toJsonSchema(g.items);
+  return out;
+}
+
+function claudeError(e) {
+  const msg = (e && e.message) || "";
+  if (Anthropic && e instanceof Anthropic.AuthenticationError) return "Ключ Claude неверный - проверьте его в настройках.";
+  if (/credit balance/i.test(msg)) return "На счёте Claude закончились деньги - пополните баланс на console.anthropic.com.";
+  if (Anthropic && e instanceof Anthropic.PermissionDeniedError) return "У ключа Claude нет доступа к этой модели. [" + msg.slice(0, 150) + "]";
+  if (Anthropic && e instanceof Anthropic.RateLimitError) return "Слишком много запросов к Claude - подождите минуту.";
+  if (Anthropic && e instanceof Anthropic.InternalServerError) return "Серверы Claude перегружены - попробуйте через минуту.";
+  if (Anthropic && e instanceof Anthropic.APIConnectionError) return "Нет связи с Claude - проверьте интернет.";
+  return "Ошибка Claude. [" + msg.slice(0, 200) + "]";
+}
+
+// один запрос к Claude со строгим JSON-ответом по схеме
+async function askClaude(system, messages, schema) {
+  const params = {
+    model: claudeModel,
+    max_tokens: 16000,
+    system,
+    messages,
+    // разговор и маршрут не требуют долгих раздумий - отвечает быстрее
+    output_config: { effort: "low", format: { type: "json_schema", schema: toJsonSchema(schema) } }
+  };
+  let res;
+  try {
+    const client = await claude();
+    res = claudeModel === "claude-haiku-5-5"
+      ? await client.messages.create(params)
+      // если фильтр безопасности ошибочно откажет, Anthropic сам повторит запрос на подходящей модели
+      : await client.beta.messages.create({ ...params, betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" });
+  } catch (e) {
+    throw new Error(claudeError(e));
+  }
+  if (res.stop_reason === "refusal") throw new Error("Claude не стал отвечать на это - переформулируйте, пожалуйста.");
+  const text = res.content.filter(b => b.type === "text").map(b => b.text).join("");
+  return JSON.parse(text);
+}
+
+// склеиваем историю в чередование user/assistant, как требует Claude
+function claudeMessages(turns, now) {
+  const msgs = [];
+  for (const t of turns) {
+    const last = msgs[msgs.length - 1];
+    if (last && last.role === t.role) last.content += "\n" + t.content;
+    else msgs.push({ role: t.role, content: t.content });
+  }
+  if (msgs.length && msgs[0].role === "assistant") msgs.unshift({ role: "user", content: "(start)" });
+  const last = msgs[msgs.length - 1];
+  if (last && last.role === "user") last.content += "\n" + now;
+  else msgs.push({ role: "user", content: now });
+  return msgs;
+}
+
+// распознавание речи браузером (Claude не принимает аудио)
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recog = null;
+
+function startListening(lang, onText) {
+  stopSpeaking();
+  recog = new SpeechRec();
+  recog.lang = lang;
+  recog.continuous = true;
+  recog.interimResults = true;
+  let finalText = "", interim = "";
+  recog.onresult = e => {
+    interim = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalText += e.results[i][0].transcript + " ";
+      else interim += e.results[i][0].transcript;
+    }
+    listeningText((finalText + interim).trim());
+  };
+  recog.onerror = e => {
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") toast("Нет доступа к микрофону или распознаванию речи - разрешите их в настройках браузера.");
+  };
+  recog.onend = () => {
+    const text = (finalText + " " + interim).trim();
+    recog = null;
+    setMode(null);
+    if (text) onText(text);
+    else toast("Не расслышала - нажмите 🎙 и говорите чуть громче.");
+  };
+  try {
+    recog.start();
+  } catch {
+    recog = null;
+    toast("Не получилось включить распознавание речи.");
+    return;
+  }
+  setMode("listening", "слушает… нажмите ■, когда закончите");
+}
+
+// Claude получает текст, а не звук - объясняем ему, как теперь замечать произношение
+const CLAUDE_NOTE = `
+
+This chat runs without audio: her messages arrive as text from speech recognition (marked "(spoken)") or typing (marked "(typed)"). Use kind "pronunciation" only when a word in a spoken message looks like a speech-recognition error caused by how she pronounced it (a similar-sounding wrong word): original is that recognized word, better is the word she most likely meant, why_ru explains the sound. In "heard", return her message exactly as received, without the (spoken)/(typed) marker.`;
+
+function askClaudeMia(lastParts) {
+  const turns = history.slice(-30).map(m => ({ role: m.role === "model" ? "assistant" : "user", content: m.text || "..." }));
+  return askClaude(SYSTEM + CLAUDE_NOTE, claudeMessages(turns, lastParts.map(p => p.text || "").join(" ")), SCHEMA);
+}
+
+function listeningText(text) {
+  $("status").textContent = "слышу: " + text.slice(-60);
+}
+
 async function turn(lastParts, meta) {
-  if (!apiKey) { openSettings(); return; }
+  if (!apiKey && !claudeKey) { openSettings(); return; }
   setMode("thinking", "думает…");
   try {
-    const r = await askGemini(lastParts);
+    const r = claudeKey ? await askClaudeMia(lastParts) : await askGemini(lastParts);
     if (!meta.start) history.push({ role: "user", text: r.heard || meta.typed || "", fixes: r.fixes || [], spoken: !!meta.spoken });
     addToDict(r.fixes || []);
     history.push({ role: "model", text: r.reply, ru: r.reply_ru, phrases: r.phrases || [] });
@@ -1036,10 +1184,16 @@ function unlockSpeech() {
 
 $("mic").onclick = () => {
   unlockSpeech();
-  if (!apiKey) { openSettings(); return; }
+  if (!apiKey && !claudeKey) { openSettings(); return; }
   if (document.body.classList.contains("thinking")) return;
   if (rec.proc) { stopRecording(); return; }
+  if (recog) { recog.stop(); return; }
   if (!history.length) { turn([{ text: "(Jamilya just opened the app. Greet her casually like a friend and ask one easy question to start chatting. Set heard to \"\".)" }], { start: true }); return; }
+  if (claudeKey) {
+    if (!SpeechRec) { toast("Этот браузер не распознаёт речь - напишите текстом (кнопка Aa) или откройте Mia в Safari или Chrome."); return; }
+    startListening("en-US", text => turn([{ text: "(spoken) " + text }], { typed: text, spoken: true }));
+    return;
+  }
   startRecording();
 };
 
@@ -1059,6 +1213,12 @@ $("typeForm").onsubmit = e => {
 
 // ---------- настройки ----------
 function openSettings() {
+  $("claudeKeyInput").value = claudeKey;
+  $("claudeKeyInfo").textContent = claudeKey ? `Сохранён ключ: ${claudeKey.slice(0, 10)}…${claudeKey.slice(-4)}, ${claudeKey.length} символов.` : "";
+  const sel = $("claudeModelSelect");
+  sel.innerHTML = "";
+  for (const [id, name] of CLAUDE_MODELS) sel.append(new Option(name, id));
+  sel.value = claudeModel;
   $("keyInput").value = apiKey;
   $("keyInfo").textContent = apiKey ? `Сохранён ключ: ${apiKey.slice(0, 6)}…${apiKey.slice(-4)}, ${apiKey.length} символов (у правильного ключа Google - 39).` : "";
   $("rateInput").value = rate;
@@ -1066,37 +1226,41 @@ function openSettings() {
   $("settings").showModal();
 }
 $("settingsBtn").onclick = openSettings;
-function shareLink(key) {
-  const hex = [...key].map(c => c.charCodeAt(0).toString(16).padStart(2, "0")).join("");
-  return location.origin + location.pathname + "#h=" + hex + keySum(key);
+function shareKeys() {
+  const g = $("keyInput").value.trim() || apiKey, c = $("claudeKeyInput").value.trim() || claudeKey;
+  return g || c ? { g: g || undefined, c: c || undefined, m: c ? ($("claudeModelSelect").value || claudeModel) : undefined } : null;
 }
+function shareLink() {
+  const text = JSON.stringify(shareKeys());
+  const hex = [...text].map(ch => ch.charCodeAt(0).toString(16).padStart(2, "0")).join("");
+  return location.origin + location.pathname + "#j=" + hex + keySum(text);
+}
+const CLAUDE_PAYS = " Внимание: с ключом Claude его разговоры оплачиваются с Вашего счёта.";
 
 // QR-код: наводят камеру iPhone - ссылка открывается сразу в Safari, мимо мессенджеров
 $("qrBtn").onclick = () => {
-  const key = $("keyInput").value.trim() || apiKey;
-  if (!key) { $("shareInfo").textContent = "Сначала вставьте свой ключ выше."; return; }
+  if (!shareKeys()) { $("shareInfo").textContent = "Сначала вставьте свой ключ выше."; return; }
   try {
     const qr = qrcode(0, "M");
-    qr.addData(shareLink(key));
+    qr.addData(shareLink());
     qr.make();
     $("qrBox").innerHTML = qr.createSvgTag({ cellSize: 5, margin: 3, scalable: true });
     const svg = $("qrBox").querySelector("svg");
     svg.style.width = "220px";
     svg.style.height = "220px";
     svg.style.background = "#fff";
-    $("shareInfo").textContent = "Пусть наведёт камеру iPhone на этот код и нажмёт на появившуюся ссылку. Приложение откроется с Вашим ключом.";
+    $("shareInfo").textContent = "Пусть наведёт камеру iPhone на этот код и нажмёт на появившуюся ссылку. Приложение откроется с Вашим ключом." + (shareKeys().c ? CLAUDE_PAYS : "");
   } catch {
     $("shareInfo").textContent = "QR-код не получился - скопируйте ссылку кнопкой выше.";
   }
 };
 
 $("shareBtn").onclick = async () => {
-  const key = $("keyInput").value.trim() || apiKey;
-  if (!key) { $("shareInfo").textContent = "Сначала вставьте свой ключ выше."; return; }
-  const link = shareLink(key);
+  if (!shareKeys()) { $("shareInfo").textContent = "Сначала вставьте свой ключ выше."; return; }
+  const link = shareLink();
   try {
     await navigator.clipboard.writeText(link);
-    $("shareInfo").textContent = "Ссылка скопирована - отправьте её в мессенджере. Открыв её, человек сразу сможет пользоваться приложением.";
+    $("shareInfo").textContent = "Ссылка скопирована - отправьте её в мессенджере. Открыв её, человек сразу сможет пользоваться приложением." + (shareKeys().c ? CLAUDE_PAYS : "");
   } catch {
     $("shareInfo").textContent = link;
   }
@@ -1114,6 +1278,10 @@ $("previewBtn").onclick = () => {
   setTimeout(() => { $("voiceInfo").textContent = "Проверка: " + (lastTts || "ответа пока нет"); }, 11000);
 };
 $("saveBtn").onclick = () => {
+  claudeKey = $("claudeKeyInput").value.trim();
+  claudeModel = $("claudeModelSelect").value || claudeModel;
+  store.set("claude_key", claudeKey);
+  store.set("claude_model", claudeModel);
   apiKey = $("keyInput").value.trim();
   rate = parseFloat($("rateInput").value);
   voiceChoice = $("voiceSelect").value;
@@ -1133,14 +1301,23 @@ $("resetBtn").onclick = () => {
 loadVoices();
 renderAll();
 renderDictCount();
-if (!apiKey) openSettings();
-// ключ пришёл по ссылке - сразу проверяем, что Google его принимает
+if (!apiKey && !claudeKey) openSettings();
+// ключи пришли по ссылке - сразу проверяем, что их принимают
 if (linkKey && linkKey !== "ok") toast(linkKey, true);
-if (linkKey === "ok") {
-  fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", { headers: { "x-goog-api-key": apiKey } })
-    .then(async r => toast(r.ok ? "Ключ из ссылки сохранён и работает ✓" : geminiError(r.status, await r.text()), !r.ok))
-    .catch(() => toast("Не удалось проверить ключ - нет связи.", true));
-}
+if (linkKey === "ok") (async () => {
+  const out = [];
+  if (claudeKey) {
+    try { await (await claude()).models.retrieve(claudeModel); out.push("ключ Claude работает ✓"); }
+    catch (e) { out.push(claudeError(e)); }
+  }
+  if (apiKey) {
+    try {
+      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1", { headers: { "x-goog-api-key": apiKey } });
+      out.push(r.ok ? "ключ Gemini работает ✓" : geminiError(r.status, await r.text()));
+    } catch { out.push("ключ Gemini не удалось проверить - нет связи"); }
+  }
+  toast("Ключи из ссылки сохранены: " + out.join("; "));
+})();
 </script>
 </body>
 </html>
