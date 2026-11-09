@@ -267,7 +267,7 @@
 
 <script>
 // ---------- обновление: телефон может держать старую копию приложения ----------
-const VERSION = "2026-11-09d";
+const VERSION = "2026-11-09e";
 fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" })
   .then(r => r.text())
   .then(t => {
@@ -627,7 +627,8 @@ async function ttsFetch(text, voice, slow) {
       const res = await fetch(a.url, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify(a.body)
+        body: JSON.stringify(a.body),
+        signal: AbortSignal.timeout ? AbortSignal.timeout(12000) : undefined
       });
       const label = a.body.model || a.url.match(/models\/([^:]+)/)[1];
       if (!res.ok) { lastTts += `${label}: ошибка ${res.status}; `; continue; }
@@ -639,7 +640,9 @@ async function ttsFetch(text, voice, slow) {
       const head = String.fromCharCode(...new Uint8Array(raw, 0, Math.min(4, raw.byteLength)));
       lastTts += `${label}: ${audio.mime_type || audio.mimeType || "без типа"}, ${raw.byteLength} байт, начало «${head.replace(/[^\x20-\x7e]/g, "?")}»; `;
       return asWav(raw, audio.mime_type || audio.mimeType);
-    } catch {}
+    } catch (e) {
+      lastTts += `${a.body.model || "tts"}: ${e.name === "TimeoutError" ? "не ответил за 12 с" : e.message}; `;
+    }
   }
   return null;
 }
@@ -697,7 +700,11 @@ async function speak(text, slow = false, btn = null) {
     let buf = await cacheGet(key);
     const fresh = !buf;
     if (fresh) {
-      buf = await ttsFetch(text, voice, slow);
+      // ждём живой голос не дольше 9 секунд, иначе говорим голосом устройства
+      buf = await Promise.race([
+        ttsFetch(text, voice, slow),
+        new Promise(r => setTimeout(() => { lastTts += "живой голос не пришёл за 9 с; "; r(null); }, 9000))
+      ]);
       // если живой голос недоступен (лимит, нет связи) - 5 минут не пробуем, чтобы не тормозить
       if (!buf) ttsDownUntil = Date.now() + 5 * 60000;
     } else {
@@ -989,7 +996,7 @@ $("previewBtn").onclick = () => {
   $("voiceInfo").textContent = "Проверяю…";
   speak("Hey, I'm Mia! So, what's up? Got any fun plans this weekend?", false, $("previewBtn"));
   // через несколько секунд показываем, что пришло от Google, - пришлите эту строку, если голос молчит
-  setTimeout(() => { $("voiceInfo").textContent = "Проверка: " + (lastTts || "ответа пока нет"); }, 8000);
+  setTimeout(() => { $("voiceInfo").textContent = "Проверка: " + (lastTts || "ответа пока нет"); }, 11000);
 };
 $("saveBtn").onclick = () => {
   apiKey = $("keyInput").value.trim();
