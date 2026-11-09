@@ -266,7 +266,7 @@
 
 <script>
 // ---------- обновление: телефон может держать старую копию приложения ----------
-const VERSION = "2026-11-09";
+const VERSION = "2026-11-09b";
 fetch(location.pathname + "?check=" + Date.now(), { cache: "no-store" })
   .then(r => r.text())
   .then(t => {
@@ -356,6 +356,7 @@ function setMode(mode, statusText) {
 
 function toast(text) {
   const t = $("toast");
+  (document.querySelector("dialog[open]") || document.body).append(t);
   t.textContent = text;
   t.classList.add("show");
   clearTimeout(toast.timer);
@@ -376,10 +377,10 @@ function fixCard(f) {
   const say = el("div", "say");
   const play = el("button", "play", "🔊");
   play.setAttribute("aria-label", "Произнести");
-  play.onclick = () => speak(f.better);
+  play.onclick = () => { unlockSpeech(); speak(f.better, false, play); };
   const slow = el("button", "play", "🐢");
   slow.setAttribute("aria-label", "Произнести медленно");
-  slow.onclick = () => speak(f.better, true);
+  slow.onclick = () => { unlockSpeech(); speak(f.better, true, slow); };
   say.append(el("span", "better", f.better), play, slow);
   card.append(say);
   if (f.say_ru) card.append(el("div", "sound", "[" + f.say_ru + "]"));
@@ -410,7 +411,7 @@ function renderEntry(m) {
   }
   const tools = el("div", "tools");
   const say = el("button", "", "🔊 Ещё раз");
-  say.onclick = () => speak(m.text);
+  say.onclick = () => { unlockSpeech(); speak(m.text, false, say); };
   const tr = el("button", "", "Перевод");
   tr.onclick = () => { extra.hidden = !extra.hidden; };
   tools.append(say, tr);
@@ -662,11 +663,17 @@ function doneSpeaking() {
   setMode(null);
 }
 
-async function speak(text, slow = false) {
+// btn - кнопка, которую нажали: пока голос загружается, на ней «…»
+async function speak(text, slow = false, btn = null) {
   stopSpeaking();
   const token = speakToken;
   speaking = true;
   setMode("speaking", slow ? "произносит медленно…" : "говорит…");
+  if (btn) {
+    btn.dataset.icon = btn.dataset.icon || btn.textContent;
+    btn.textContent = "…";
+  }
+  const ready = () => { if (btn) btn.textContent = btn.dataset.icon; };
 
   if (voiceChoice.startsWith("ai:") && apiKey && Date.now() > ttsDownUntil) {
     const voice = voiceChoice.slice(3);
@@ -677,18 +684,19 @@ async function speak(text, slow = false) {
       // если живой голос недоступен (лимит, нет связи) - 5 минут не пробуем, чтобы не тормозить
       if (buf) cachePut(key, buf, text); else ttsDownUntil = Date.now() + 5 * 60000;
     }
-    if (token !== speakToken) return;
+    if (token !== speakToken) { ready(); return; }
     if (buf) {
       try {
         const ctx = audioCtx();
         const audio = await ctx.decodeAudioData(buf.slice(0));
-        if (token !== speakToken) return;
+        if (token !== speakToken) { ready(); return; }
         const src = ctx.createBufferSource();
         src.buffer = audio;
         src.connect(analyser);
         src.onended = () => { if (token === speakToken) doneSpeaking(); };
         playing = src;
         talk = "ai";
+        ready();
         src.start();
         return;
       } catch {}
@@ -707,6 +715,7 @@ async function speak(text, slow = false) {
   u.onerror = done;
   u.onboundary = () => { mouthBoost = 1; };
   talk = "device";
+  ready();
   speechSynthesis.speak(u);
 }
 
